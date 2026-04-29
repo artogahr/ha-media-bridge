@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HA Media Bridge</string>
+    <string name="service_label">HA Media Bridge service</string>
+    <string name="subtitle">Reports media session changes to Home Assistant</string>
+
+    <string name="hint_ha_url">Home Assistant URL (e.g. http://192.168.1.10:8123)</string>
+    <string name="hint_webhook_id">Webhook ID</string>
+    <string name="hint_package_filter">Package filter — optional, comma-separated (e.g. org.smarttube.stable)</string>
+
+    <string name="btn_save">Save</string>
+    <string name="btn_grant_permission">Grant Notification Access</string>
+
+    <string name="status_active">● Listening — service is active</string>
+    <string name="status_no_permission">○ Not active — tap Grant Notification Access</string>
+</resources>
