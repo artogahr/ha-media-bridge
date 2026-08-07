@@ -1,0 +1,115 @@
+# Home Assistant automation that consumes the webhook posted by this app.
+#
+# Exported from the live automation on 2026-08-07 for reference — edit it in
+# Home Assistant (Settings > Automations), not here; this file is not loaded
+# by HA and won't stay in sync automatically.
+#
+# Required helpers (Settings > Devices & services > Helpers):
+#   - input_boolean.music_mode
+#   - input_text.smarttube_current_title   (max length 255)
+#
+# Required rest_command (configuration.yaml), using a YouTube Data API v3 key:
+#   rest_command:
+#     youtube_search:
+#       url: "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&q={{ query | urlencode }}&key=YOUR_API_KEY"
+#     youtube_video_details:
+#       url: "https://www.googleapis.com/youtube/v3/videos?part=snippet&id={{ video_id }}&key=YOUR_API_KEY"
+#
+# How it classifies a video:
+#   1. Reads `title` (required) and optional `artist`/`media_id` from the
+#      webhook payload (see README.md "Payload reference").
+#   2. If the app supplied `media_id` (a YouTube video ID), uses it directly.
+#      Otherwise searches YouTube for "<title> <artist>" (falling back to
+#      just <title> when no artist is present) and takes the top result.
+#      Including the artist/channel name is important: a bare title like
+#      "Chimera" or "Lullaby" is ambiguous and can match an unrelated,
+#      more-popular video with the same title.
+#   3. Fetches that video's `categoryId` and treats `10` (Music) as music.
+#
+# Known limitation: `categoryId` is chosen by the uploader, not derived from
+# the audio — plenty of real music (regional/niche/older uploads especially)
+# is mis-filed under other categories (e.g. Travel & Events) and won't be
+# detected as music even when the right video is found.
+#
+# mode: queued (not restart/single) is required — the app fires two webhook
+# calls per video change a few dozen ms apart, and `restart` mode kills the
+# in-flight classification of the first call before its API responses land.
+# The dedup condition on input_text.smarttube_current_title makes the second
+# (queued) call a harmless no-op once it runs.
+
+alias: SmartTube Music Mode
+description: >-
+  Triggered by HA Media Bridge app via webhook when video changes. Uses the
+  exact media_id (YouTube video ID) when the app supplies one; falls back to
+  a title search otherwise. Classifies via YouTube API and sets Music Mode.
+mode: queued
+max: 5
+triggers:
+  - trigger: webhook
+    webhook_id: smarttube_now_playing
+    id: media_update
+    local_only: false
+conditions: []
+actions:
+  - variables:
+      video_title: "{{ trigger.json.title | default('') | trim }}"
+      media_id: "{{ trigger.json.get('media_id', '') | default('') | trim }}"
+      artist: "{{ trigger.json.get('artist', '') | default('') | trim }}"
+
+  - condition: template
+    value_template: "{{ video_title | length > 0 and video_title | lower != 'null' }}"
+
+  - condition: template
+    value_template: "{{ video_title != states('input_text.smarttube_current_title') }}"
+
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.smarttube_current_title
+    data:
+      value: "{{ video_title }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ media_id | length > 0 }}"
+    then:
+      - variables:
+          video_id: "{{ media_id }}"
+    else:
+      - action: rest_command.youtube_search
+        data:
+          query: "{{ (video_title ~ ' ' ~ artist) if artist | length > 0 else video_title }}"
+        response_variable: search_resp
+
+      - condition: template
+        value_template: "{{ search_resp is defined and search_resp.get('status') == 200 }}"
+
+      - variables:
+          video_id: "{{ search_resp['content'].get('items', [{}])[0].get('id', {}).get('videoId', '') }}"
+
+      - condition: template
+        value_template: "{{ video_id | length > 0 }}"
+
+  - action: rest_command.youtube_video_details
+    data:
+      video_id: "{{ video_id }}"
+    response_variable: details_resp
+
+  - condition: template
+    value_template: "{{ details_resp is defined and details_resp.get('status') == 200 }}"
+
+  - variables:
+      category_id: >-
+        {% set items = details_resp['content'].get('items', []) %}
+        {% if items | length > 0 %}{{ items[0]['snippet']['categoryId'] }}{% else %}0{% endif %}
+
+  - if:
+      - condition: template
+        value_template: "{{ category_id | string == '10' }}"
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.music_mode
+    else:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.music_mode
