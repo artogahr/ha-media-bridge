@@ -8,12 +8,14 @@
 #   - input_boolean.music_mode
 #   - input_text.smarttube_current_title   (max length 255)
 #
-# Required rest_command (configuration.yaml), using a YouTube Data API v3 key:
+# Required rest_command (configuration.yaml), using a YouTube Data API v3 key.
+# Note `part=snippet,topicDetails` on youtube_video_details — topicDetails is
+# what makes the mis-categorized-video case below detectable:
 #   rest_command:
 #     youtube_search:
 #       url: "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&q={{ query | urlencode }}&key=YOUR_API_KEY"
 #     youtube_video_details:
-#       url: "https://www.googleapis.com/youtube/v3/videos?part=snippet&id={{ video_id }}&key=YOUR_API_KEY"
+#       url: "https://www.googleapis.com/youtube/v3/videos?part=snippet,topicDetails&id={{ video_id }}&key=YOUR_API_KEY"
 #
 # How it classifies a video:
 #   1. Reads `title` (required) and optional `artist`/`media_id` from the
@@ -24,12 +26,15 @@
 #      Including the artist/channel name is important: a bare title like
 #      "Chimera" or "Lullaby" is ambiguous and can match an unrelated,
 #      more-popular video with the same title.
-#   3. Fetches that video's `categoryId` and treats `10` (Music) as music.
-#
-# Known limitation: `categoryId` is chosen by the uploader, not derived from
-# the audio — plenty of real music (regional/niche/older uploads especially)
-# is mis-filed under other categories (e.g. Travel & Events) and won't be
-# detected as music even when the right video is found.
+#   3. Fetches that video's `categoryId` AND `topicDetails.topicCategories`,
+#      and treats it as music if EITHER categoryId == 10 (Music) OR any topic
+#      category is one of a known set of music-related Wikipedia topics.
+#      `categoryId` alone isn't enough: it's chosen by the uploader, not
+#      derived from the audio, and plenty of real music (regional/niche/older
+#      uploads especially) is mis-filed under other categories — e.g. an
+#      Azerbaijani jazz recording filed under categoryId 19 (Travel & Events)
+#      still carries topicCategories ["...wiki/Jazz", "...wiki/Music"], which
+#      the topic check catches.
 #
 # mode: queued (not restart/single) is required — the app fires two webhook
 # calls per video change a few dozen ms apart, and `restart` mode kills the
@@ -101,10 +106,28 @@ actions:
       category_id: >-
         {% set items = details_resp['content'].get('items', []) %}
         {% if items | length > 0 %}{{ items[0]['snippet']['categoryId'] }}{% else %}0{% endif %}
+      topic_categories: "{{ details_resp['content'].get('items', [{}])[0].get('topicDetails', {}).get('topicCategories', []) }}"
+      is_music: >-
+        {{ (category_id | string == '10') or (topic_categories | select('in', [
+        'https://en.wikipedia.org/wiki/Music',
+        'https://en.wikipedia.org/wiki/Christian_music',
+        'https://en.wikipedia.org/wiki/Classical_music',
+        'https://en.wikipedia.org/wiki/Country_music',
+        'https://en.wikipedia.org/wiki/Electronic_music',
+        'https://en.wikipedia.org/wiki/Hip_hop_music',
+        'https://en.wikipedia.org/wiki/Independent_music',
+        'https://en.wikipedia.org/wiki/Jazz',
+        'https://en.wikipedia.org/wiki/Music_of_Asia',
+        'https://en.wikipedia.org/wiki/Music_of_Latin_America',
+        'https://en.wikipedia.org/wiki/Pop_music',
+        'https://en.wikipedia.org/wiki/Reggae',
+        'https://en.wikipedia.org/wiki/Rhythm_and_blues',
+        'https://en.wikipedia.org/wiki/Soul_music',
+        'https://en.wikipedia.org/wiki/Vocal_music']) | list | length > 0) }}
 
   - if:
       - condition: template
-        value_template: "{{ category_id | string == '10' }}"
+        value_template: "{{ is_music }}"
     then:
       - action: input_boolean.turn_on
         target:
